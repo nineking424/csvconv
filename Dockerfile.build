@@ -1,0 +1,51 @@
+FROM centos:8
+
+# Fix CentOS 8 EOL repos
+RUN sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-* && \
+    sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+
+# Install Python 3.8 from AppStream
+RUN dnf install -y python38 && dnf clean all
+
+WORKDIR /app
+COPY dist/csvconv.pex /app/csvconv.pex
+
+# Prepare test data
+RUN python3.8 -c "
+import csv, io, tarfile, os
+os.makedirs('/app/testdata', exist_ok=True)
+
+# Sample CSV
+with open('/app/testdata/sample.csv', 'w', newline='') as f:
+    w = csv.writer(f)
+    w.writerow(['id', 'value', 'name'])
+    for i in range(100):
+        w.writerow([i, float(i)*1.5, 'name_{}'.format(i)])
+
+# Sample tar.gz
+with tarfile.open('/app/testdata/sample.tar.gz', 'w:gz') as tar:
+    for idx in range(3):
+        content = 'id,value,name\n'
+        for i in range(50):
+            content += '{},{},{}\n'.format(idx*50+i, float(idx*50+i)*1.5, 'name_{}'.format(i))
+        data = content.encode('utf-8')
+        info = tarfile.TarInfo(name='data_{}.csv'.format(idx))
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+"
+
+# Verify PEX runs
+RUN chmod +x /app/csvconv.pex
+
+# Default: run all verifications
+CMD python3.8 /app/csvconv.pex --version && \
+    python3.8 /app/csvconv.pex --help && \
+    python3.8 /app/csvconv.pex --input /app/testdata/sample.csv --output /app/testdata/out.parquet && \
+    echo "CSV->Parquet: OK" && \
+    mkdir -p /app/testdata/pq_out && \
+    python3.8 /app/csvconv.pex --input /app/testdata/sample.tar.gz --output /app/testdata/pq_out --output-type parquet && \
+    echo "tar.gz->Parquet: OK" && \
+    mkdir -p /app/testdata/csv_out && \
+    python3.8 /app/csvconv.pex --input /app/testdata/sample.tar.gz --output /app/testdata/csv_out --output-type csv && \
+    echo "tar.gz->CSV: OK" && \
+    echo "All PEX verification tests passed!"
